@@ -1,14 +1,15 @@
 import { ConnectClient, AssociatePhoneNumberContactFlowCommand } from '@aws-sdk/client-connect';
 
 /**
- * CloudFormation custom-resource handler that fills a genuine IaC gap:
- * `AWS::Connect::PhoneNumber` has no property to bind the number to a
- * contact flow -- that association is only exposed via the
- * `AssociatePhoneNumberContactFlow` API (there is no CloudFormation-native
- * resource for it as of this writing). This is invoked through a CDK
- * `custom_resources.Provider` -- see infra/lib/vanity-connect-stack.ts.
+ * This fills a real gap in what CloudFormation can do on its own:
+ * `AWS::Connect::PhoneNumber` has no setting to connect the number to a
+ * call flow -- the only way to do that is through the separate
+ * `AssociatePhoneNumberContactFlow` API call, since there's no
+ * CloudFormation resource for it. CloudFormation runs this Lambda
+ * automatically through a CDK "custom resource" -- see
+ * infra/lib/vanity-connect-stack.ts.
  *
- * Confirmed against the AWS API reference during implementation:
+ * Checked against the real AWS API docs while building this:
  * https://docs.aws.amazon.com/connect/latest/APIReference/API_AssociatePhoneNumberContactFlow.html
  */
 interface CloudFormationCustomResourceEvent {
@@ -38,9 +39,10 @@ export async function handler(
     );
   }
 
-  // Deliberately a no-op on Delete: the phone number and instance are being
-  // torn down in the same stack deletion, so there's nothing meaningful to
-  // disassociate, and calling the API here would just be one more thing
-  // that could fail and block a clean `cdk destroy`. See docs/design-notes.md.
+  // On Delete, this deliberately does nothing: the phone number and the
+  // whole Connect instance are being deleted together anyway, so there's
+  // nothing real left to disconnect -- and calling the API here would just
+  // be one more thing that could fail and get in the way of a clean
+  // `cdk destroy`. See docs/design-notes.md.
   return { PhysicalResourceId: physicalResourceId };
 }

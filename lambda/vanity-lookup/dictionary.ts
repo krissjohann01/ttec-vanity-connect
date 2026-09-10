@@ -1,8 +1,8 @@
 import words from './words.json';
 
 /**
- * Standard telephone keypad letter mapping. 0 and 1 have no letters, so a
- * digit sequence containing them can never be (fully) replaced by a word.
+ * The letters on a standard phone keypad. 0 and 1 have no letters, so a
+ * number that contains them can never be turned fully into a word.
  */
 export const DIGIT_TO_LETTERS: Record<string, string> = {
   '2': 'ABC',
@@ -23,7 +23,7 @@ const LETTER_TO_DIGIT: Record<string, string> = Object.entries(DIGIT_TO_LETTERS)
   {} as Record<string, string>,
 );
 
-/** Converts a word (letters only, any case) to its keypad digit signature, e.g. "Cab" -> "222". */
+/** Turns a word into the digits you'd press to spell it, e.g. "Cab" -> "222". */
 export function wordToDigits(word: string): string {
   let out = '';
   for (const ch of word.toUpperCase()) {
@@ -37,10 +37,10 @@ export function wordToDigits(word: string): string {
 export type DictionaryIndex = Map<string, string[]>;
 
 /**
- * Groups words by their digit signature. Words are expected to already be
- * ordered most-common-first (see words.json); that order is preserved within
- * each bucket, which lets scoring treat "earlier in the bucket" as "more
- * common" without carrying a separate frequency field around.
+ * Groups words by the digits they spell. words.json is already sorted from
+ * most common to least common, and that order carries over into each group
+ * -- so later code can tell "more common" just by checking what's earlier
+ * in the list, without needing to store a separate rank number per word.
  */
 export function buildDictionaryIndex(dictionaryWords: string[] = words as string[]): DictionaryIndex {
   const index: DictionaryIndex = new Map();
@@ -56,12 +56,12 @@ export function buildDictionaryIndex(dictionaryWords: string[] = words as string
   return index;
 }
 
-// Built once per Lambda execution environment (module scope = reused across
-// warm invocations), not per-request -- see design-notes.md "cold start".
+// This only runs once when the Lambda starts up, not on every phone call --
+// see design-notes.md's note on cold starts for why that matters.
 export const DEFAULT_DICTIONARY_INDEX = buildDictionaryIndex();
 export const DEFAULT_WORDS: readonly string[] = words as string[];
 
-/** word -> position in the frequency-ranked list (lower = more common). O(1) lookup for scoring. */
+/** Looks up a word's position in the common-words list (lower number = more common). Fast lookup for scoring. */
 export const DEFAULT_WORD_RANKS: ReadonlyMap<string, number> = new Map(
   DEFAULT_WORDS.map((word, i) => [word, i]),
 );

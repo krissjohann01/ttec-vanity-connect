@@ -2,9 +2,10 @@ import { generateVanityCandidates, plainFormat } from './vanity';
 import { logCall, candidatesToDisplayList } from './dynamo';
 
 /**
- * Minimal shape of the event Amazon Connect sends an "Invoke AWS Lambda
- * function" block. Connect does not publish an `@types` package for this,
- * so this is hand-written to the fields we actually use -- see
+ * The shape of the data Amazon Connect sends when it calls this Lambda from
+ * the "Invoke AWS Lambda function" step in the call flow. Amazon doesn't
+ * publish a ready-made type for this, so this only covers the fields we
+ * actually use -- see
  * https://docs.aws.amazon.com/connect/latest/adminguide/connect-lambda-functions.html
  */
 export interface ConnectLambdaEvent {
@@ -18,11 +19,11 @@ export interface ConnectLambdaEvent {
 }
 
 /**
- * Connect's "Set contact attributes -> External" mechanism only auto-promotes
- * a FLAT object of string values (ResponseValidation: STRING_MAP in the
- * contact flow). Nested objects/arrays or non-string values would silently
- * fail to appear as $.External.* attributes, so this shape is load-bearing --
- * see docs/design-notes.md.
+ * Amazon Connect only picks up a Lambda's response automatically if it's a
+ * flat object of plain text values -- no nested objects, no numbers or
+ * true/false values, just strings. Anything else silently won't show up in
+ * the call flow, with no error to tell you why. So this exact shape
+ * matters -- see docs/design-notes.md for more on how this was figured out.
  */
 export interface VanityLookupResponse {
   vanity1: string;
@@ -38,8 +39,8 @@ export async function handler(event: ConnectLambdaEvent): Promise<VanityLookupRe
   const tableName = process.env.TABLE_NAME;
   if (!tableName) throw new Error('TABLE_NAME environment variable is not set');
 
-  // Parameters override lets this same Lambda be smoke-tested from the
-  // Lambda console / CLI without needing a live call.
+  // The Parameters override lets you test this same Lambda from the AWS
+  // console or command line without needing to make a real phone call.
   const callerNumber =
     event.Details.Parameters?.phoneNumber ?? event.Details.ContactData.CustomerEndpoint?.Address ?? '';
   const contactId = event.Details.ContactData.ContactId;
@@ -48,13 +49,14 @@ export async function handler(event: ConnectLambdaEvent): Promise<VanityLookupRe
     const candidates = generateVanityCandidates(callerNumber, TOP_N_SAVED);
     const fallback = plainFormat(callerNumber) ?? callerNumber;
 
-    // Always give the flow TOP_N_SPOKEN non-empty strings to read, even if
-    // the algorithm found fewer than 3 real matches for this number.
+    // Always hand back 3 real strings to read out loud, even if the
+    // algorithm found fewer than 3 good matches for this number.
     const spoken = Array.from({ length: TOP_N_SPOKEN }, (_, i) => candidates[i]?.display ?? fallback);
 
-    // A DynamoDB failure shouldn't break the caller's experience -- log and
-    // continue rather than letting it fall through to the outer catch,
-    // which would trigger the contact flow's (less friendly) error branch.
+    // If saving to DynamoDB fails, don't let that ruin the call for the
+    // caller -- just log it and keep going, instead of letting it bubble up
+    // to the outer catch block below, which would trigger a less friendly
+    // error message in the call flow.
     try {
       await logCall(tableName, callerNumber, contactId, candidatesToDisplayList(candidates.slice(0, TOP_N_SAVED)));
     } catch (err) {

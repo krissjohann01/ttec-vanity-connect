@@ -1,7 +1,7 @@
 /**
- * Must be the first thing imported by scripts/local-server.ts -- every
- * handler module creates its AWS SDK client at module-load time, so these
- * env vars have to exist before anything else is required.
+ * This has to be the very first thing scripts/local-server.ts imports.
+ * Each Lambda handler sets up its AWS connection as soon as it's loaded, so
+ * these settings need to already be in place before that happens.
  */
 process.env.AWS_REGION = 'us-east-1';
 process.env.AWS_ACCESS_KEY_ID = 'local';

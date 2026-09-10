@@ -2,10 +2,10 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { VanityCandidate } from './vanity';
 
-// One client per execution environment, reused across warm invocations --
-// creating it per-request would add avoidable latency to every call.
-// DYNAMODB_ENDPOINT is a local-dev-only hook (see scripts/local-server.ts) --
-// it's never set in the deployed Lambda, which always talks to real DynamoDB.
+// Created once and reused across calls, instead of once per call, since
+// creating it fresh every time would just slow things down for no reason.
+// DYNAMODB_ENDPOINT is only used for local testing (see scripts/local-server.ts)
+// -- the real, deployed Lambda never sets it, so it always talks to real DynamoDB.
 const ddbClient = DynamoDBDocumentClient.from(
   new DynamoDBClient(process.env.DYNAMODB_ENDPOINT ? { endpoint: process.env.DYNAMODB_ENDPOINT } : {}),
 );
@@ -20,11 +20,11 @@ export interface CallLogItem {
 }
 
 /**
- * Single logical partition ("CALLLOG"), sorted by timestamp, so the bonus
- * "last 5 callers" feature is a plain Query (ScanIndexForward=false, Limit=5)
- * with no GSI or scan required. Documented in design-notes.md as a
- * demo-scale shortcut: a hot single partition would not survive real call
- * volume and would need sharding (e.g. a per-hour or per-shard pk) in production.
+ * All calls are stored under this one key, sorted by time. That keeps
+ * things simple -- the bonus "last 5 callers" feature is just a plain
+ * query, no extra index needed. As noted in design-notes.md, this is a
+ * shortcut that wouldn't hold up under real call volume -- a production
+ * version would need to spread calls across multiple keys instead of one.
  */
 const PARTITION_KEY_VALUE = 'CALLLOG';
 
@@ -37,7 +37,8 @@ export async function logCall(
   const timestamp = new Date().toISOString();
   const item: CallLogItem = {
     pk: PARTITION_KEY_VALUE,
-    // contactId suffix guarantees sk uniqueness even for two calls in the same millisecond.
+    // Adding the contactId on the end makes sure this stays unique, even if
+    // two calls happen to come in at the exact same millisecond.
     sk: `${timestamp}#${contactId}`,
     callerNumber,
     contactId,

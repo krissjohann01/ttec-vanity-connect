@@ -1,19 +1,19 @@
 import { DictionaryIndex, DEFAULT_DICTIONARY_INDEX, DEFAULT_WORD_RANKS } from './dictionary';
 
-/** A NANP (US/Canada) number split into its dialable area code and 7-digit local number. */
+/** A US/Canada phone number split into its area code and 7-digit local number. */
 export interface ParsedPhoneNumber {
   areaCode: string;
   localNumber: string;
 }
 
 export interface VanityCandidate {
-  /** Human-readable form, e.g. "CAB-3729". */
+  /** How it looks written out, e.g. "CAB-3729". */
   display: string;
-  /** The 7-digit local number this candidate replaces (unformatted). */
+  /** The 7 local digits this candidate is based on, with no formatting. */
   digits: string;
-  /** Dictionary words used, in left-to-right order. Empty for the all-digits fallback. */
+  /** The word(s) used, left to right. Empty when it's just plain digits. */
   words: string[];
-  /** Higher is "better" -- see scoreCandidate for the definition. */
+  /** Higher means "better" -- see scoreCandidate below for what that means. */
   score: number;
 }
 
@@ -22,11 +22,11 @@ const MAX_WORDS_PER_SEGMENTATION = 3;
 const MIN_WORD_LENGTH = 3;
 
 /**
- * Accepts common real-world formats a caller ID or a human might produce
+ * Takes a phone number in whatever common format it shows up in
  * ("+15125551234", "(512) 555-1234", "512-555-1234", "15125551234") and
- * reduces them to a bare 10-digit NANP number, or null if that's not
- * possible. Only NANP (1 + 10 digits) numbers are supported -- see
- * design-notes.md "shortcuts" for why international numbers are out of scope.
+ * turns it into a plain 10-digit US/Canada number, or returns null if it
+ * can't. Only US/Canada numbers are supported -- see the "shortcuts"
+ * section of design-notes.md for why other countries aren't handled.
  */
 export function normalizePhoneNumber(raw: string): ParsedPhoneNumber | null {
   const digitsOnly = raw.replace(/\D/g, '');
@@ -44,10 +44,12 @@ export function normalizePhoneNumber(raw: string): ParsedPhoneNumber | null {
 }
 
 /**
- * Finds every way to fully segment `digits` into 1..MAX_WORDS_PER_SEGMENTATION
- * dictionary words with no leftover digits. Classic word-break backtracking;
- * the search space for a 7-digit number is tiny (at most 2^6 split points)
- * so no memoization is needed to stay well inside the Lambda time budget.
+ * Finds every way to spell out all of `digits` using 1 to
+ * MAX_WORDS_PER_SEGMENTATION real words, with no digits left over. This is
+ * the classic "can this be split into dictionary words" problem, solved by
+ * just trying every split point. A 7-digit number only has a handful of
+ * possible split points, so this is fast enough without needing anything
+ * clever to speed it up.
  */
 export function findFullSegmentations(digits: string, dictionary: DictionaryIndex): string[][] {
   const results: string[][] = [];
@@ -63,10 +65,10 @@ export function findFullSegmentations(digits: string, dictionary: DictionaryInde
       const prefix = remaining.slice(0, len);
       const matches = dictionary.get(prefix);
       if (!matches) continue;
-      // Only try the most common match per digit-signature per branch --
-      // homographs-in-digits (e.g. two different 3-letter words sharing a
-      // signature) would otherwise multiply the search for no real benefit,
-      // since scoring already prefers the most common word.
+      // If more than one word spells out the same digits, only try the most
+      // common one here -- trying all of them would just search more without
+      // finding anything better, since the scoring step already prefers the
+      // more common word anyway.
       wordsSoFar.push(matches[0]);
       backtrack(remaining.slice(len), wordsSoFar);
       wordsSoFar.pop();
@@ -78,10 +80,11 @@ export function findFullSegmentations(digits: string, dictionary: DictionaryInde
 }
 
 /**
- * Finds the best single dictionary word for every contiguous substring of
- * `digits` (length >= MIN_WORD_LENGTH), used as a fallback when no full
- * segmentation exists -- mirrors how real vanity numbers usually work
- * (1-800-FLOWERS keeps the toll-free prefix numeric, only part becomes a word).
+ * Finds the best word hiding anywhere inside `digits`, even if it doesn't
+ * cover the whole number. Used as a backup when there's no way to spell the
+ * whole thing as words. This is also just how most real vanity numbers
+ * work -- 1-800-FLOWERS keeps the toll-free part as numbers and only turns
+ * part of it into a word.
  */
 export function findPartialMatches(
   digits: string,
@@ -99,16 +102,17 @@ export function findPartialMatches(
 }
 
 /**
- * "Best" is defined as (in priority order):
- *   1. More of the 7 digits converted to letters (a fully-worded number beats
- *      a partially-worded one -- it's what people actually remember).
- *   2. Fewer dictionary words used to cover that many digits (SHOEBOX beats
- *      SHOE-BOX -- one memorable word beats a run-on of two).
- *   3. More common words (average dictionary rank -- avoids obscure words a
- *      caller wouldn't recognize when it's read aloud).
- *   4. Starting closer to the front of the local number (the part callers
- *      hear/read first is the part that sticks).
- * Full rationale is in docs/design-notes.md ("Best" is defined as you see fit).
+ * What makes a candidate "better" than another, in order of importance:
+ *   1. More of the 7 digits turned into letters -- a number that's fully a
+ *      word beats one that's only partly a word, since that's what people
+ *      actually remember.
+ *   2. Fewer words used to cover those digits -- SHOEBOX beats SHOE-BOX,
+ *      since one clean word beats two words stuck together.
+ *   3. More common words -- avoids picking an obscure word nobody would
+ *      recognize when it's read out loud.
+ *   4. Starting closer to the front of the number -- the part you hear
+ *      first is the part that sticks.
+ * The full explanation is in docs/design-notes.md.
  */
 export function scoreCandidate(digitsCovered: number, wordCount: number, avgRank: number, startPos: number): number {
   const coverageScore = digitsCovered * 1000;
@@ -119,11 +123,12 @@ export function scoreCandidate(digitsCovered: number, wordCount: number, avgRank
 }
 
 /**
- * Renders segments word-boundary-first ("512-CAB-9999", "512-SHOE-BOX",
- * "512-SHOEBOX") rather than a fixed 3-4 digit split. This matters for more
- * than looks: it's also what keeps candidates with a different word
- * breakdown of the same digits (SHOEBOX vs. SHOE+BOX) from rendering as the
- * same display string and silently deduplicating one of them away.
+ * Formats the number by breaking it at word boundaries ("512-CAB-9999",
+ * "512-SHOE-BOX", "512-SHOEBOX") instead of always splitting it 3 digits,
+ * then 4. This isn't just about looks: it's also what keeps two different
+ * candidates that use the same digits but different words (SHOEBOX vs.
+ * SHOE+BOX) from ending up looking identical and one silently getting
+ * dropped as a duplicate.
  */
 function formatDisplay(areaCode: string, localDigits: string, replacements: { start: number; text: string }[]): string {
   const byStart = new Map(replacements.map((r) => [r.start, r.text]));
@@ -153,9 +158,10 @@ function rankOf(word: string, ranks: ReadonlyMap<string, number>): number {
 }
 
 /**
- * Produces up to `limit` ranked vanity-number candidates for a phone number.
- * Returns [] if the number can't be parsed or no dictionary words fit it at
- * all (the Lambda handler falls back to the plain digits in that case).
+ * Returns up to `limit` vanity-number ideas for a phone number, best first.
+ * Returns an empty list if the number isn't valid or no word fits it at all
+ * -- when that happens, the Lambda handler just falls back to the plain
+ * digits instead.
  */
 export function generateVanityCandidates(
   rawPhoneNumber: string,
@@ -185,7 +191,7 @@ export function generateVanityCandidates(
     }
   };
 
-  // Tier 1: full segmentations (every digit becomes a letter).
+  // First, look for ways to spell the whole number as words.
   for (const segmentation of findFullSegmentations(localNumber, dictionary)) {
     const replacements: { start: number; text: string }[] = [];
     let cursor = 0;
@@ -196,8 +202,8 @@ export function generateVanityCandidates(
     addCandidate(segmentation, replacements, LOCAL_NUMBER_LENGTH);
   }
 
-  // Tier 2: best single-word substring matches, used to fill out the list
-  // when full segmentations are scarce or absent.
+  // Then add the best partial-word matches too, to fill out the list when
+  // there aren't enough (or any) full-word matches.
   for (const { start, word } of findPartialMatches(localNumber, dictionary)) {
     addCandidate([word], [{ start, text: word }], word.length);
   }
@@ -207,7 +213,7 @@ export function generateVanityCandidates(
     .slice(0, limit);
 }
 
-/** Plain, hyphen-formatted fallback ("512-555-1234") for when no word fits at all. */
+/** Plain formatted number ("512-555-1234"), used when no word fits at all. */
 export function plainFormat(rawPhoneNumber: string): string | null {
   const parsed = normalizePhoneNumber(rawPhoneNumber);
   if (!parsed) return null;

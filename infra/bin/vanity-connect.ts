@@ -2,12 +2,13 @@
 import * as cdk from 'aws-cdk-lib';
 import { VanityConnectStack } from '../lib/vanity-connect-stack';
 
-// Amazon Connect telephony (claiming a phone number) is not available in
-// every AWS region -- deploying to one of these would fail confusingly deep
-// into the CfnPhoneNumber resource. Fail fast instead. Non-exhaustive by
-// design: verify current coverage at
+// Amazon Connect's phone features aren't available in every AWS region --
+// deploying to one of these would fail later on, deep inside the phone
+// number setup, with a confusing error. Better to stop early with a clear
+// message instead. This list isn't complete on purpose -- check current
+// coverage at
 // https://docs.aws.amazon.com/connect/latest/adminguide/concepts-telephony.html
-// before assuming any other region works.
+// rather than assuming any region not on this list definitely works.
 const KNOWN_UNSUPPORTED_REGIONS = new Set(['us-gov-east-1', 'us-gov-west-1', 'af-south-1']);
 
 const app = new cdk.App();
@@ -24,8 +25,7 @@ if (KNOWN_UNSUPPORTED_REGIONS.has(region)) {
   );
 }
 
-new VanityConnectStack(app, 'TtecVanityConnectStack', {
+new VanityConnectStack(app, 'VanityConnectStack', {
   env: { account, region },
-  description:
-    'Vanity phone number lookup: Amazon Connect + Lambda + DynamoDB (TTEC Digital take-home project).',
+  description: 'Vanity phone number lookup: Amazon Connect + Lambda + DynamoDB.',
 });

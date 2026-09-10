@@ -1,6 +1,6 @@
 # Architecture
 
-## Call path (the required deliverable)
+## How a phone call flows through the system
 
 ```mermaid
 sequenceDiagram
@@ -20,7 +20,7 @@ sequenceDiagram
     Flow->>Caller: disconnect
 ```
 
-## Bonus: "last 5 callers" web app
+## Bonus: the "last 5 callers" web page
 
 ```mermaid
 flowchart LR
@@ -30,7 +30,7 @@ flowchart LR
     DDB --> CallersApi --> FnUrl --> Browser
 ```
 
-## Deployed resources (AWS CDK, TypeScript)
+## Everything the CDK stack creates (AWS CDK, TypeScript)
 
 ```mermaid
 flowchart TB
@@ -60,10 +60,10 @@ flowchart TB
     AssocFn --> Flow
 ```
 
-## Component notes
+## What each piece does
 
-- **vanity-lookup Lambda** (`lambda/vanity-lookup/`) — pure, dependency-free algorithm in `vanity.ts`, unit tested in `vanity.test.ts` independent of AWS. `index.ts` is the thin Connect-facing adapter (parse event, call algorithm, write DynamoDB, shape the response).
-- **DynamoDB CallLogTable** — one partition (`pk = "CALLLOG"`), sorted by `sk = ISO timestamp#contactId`. Serves both the write side (call logging) and the bonus read side (`Query`, no scan, no GSI) from a single table. Does not scale past a single-partition write ceiling — see [design-notes.md](design-notes.md) §4.
-- **Contact flow** — authored as Connect "Flow language" JSON in `infra/lib/contact-flow-content.ts` rather than built in the visual designer, so it's versioned like the rest of the code. Invoke Lambda → success branch speaks the 3 vanity numbers via `$.External.vanity1/2/3`; error branch (any Lambda failure Connect itself catches) speaks an apology instead of failing the call.
-- **phone-flow-association custom resource** — `AWS::Connect::PhoneNumber` has no CloudFormation property to bind a claimed number to a contact flow; that's only exposed via the `AssociatePhoneNumberContactFlow` API. A small Lambda behind a CDK `custom_resources.Provider` fills that gap on stack create/update. See `lambda/phone-flow-association/index.ts`.
-- **callers-api Lambda + Function URL** — bonus feature, deliberately minimal (no API Gateway, no S3/CloudFront for the static page) per the "small scale" instruction in the brief.
+- **vanity-lookup Lambda** (`lambda/vanity-lookup/`) — the actual algorithm lives in `vanity.ts`, kept separate from any AWS code so it can be tested on its own (`vanity.test.ts`). `index.ts` is a small wrapper that reads the incoming call event, runs the algorithm, saves to DynamoDB, and sends back the result.
+- **DynamoDB CallLogTable** — all call records sit in one partition (`pk = "CALLLOG"`), sorted by a timestamp. This keeps things simple: both saving a new call and reading "the last 5 callers" are cheap, basic queries with no extra index needed. The trade-off is that one partition can only take so many writes per second — see [design-notes.md](design-notes.md) section 4.
+- **Contact flow** — written as JSON code in `infra/lib/contact-flow-content.ts` instead of built by hand in Amazon Connect's drag-and-drop editor, so it's tracked in version control like everything else. It calls the Lambda, and on success reads back the 3 vanity numbers it returned; if the Lambda call fails for any reason, it plays an apology message instead of just failing silently.
+- **phone-flow-association (custom resource)** — CloudFormation has no built-in way to connect a claimed phone number to a call flow; that connection can only be made through a separate API call. This is a small Lambda that CloudFormation runs automatically to make that one API call. See `lambda/phone-flow-association/index.ts`.
+- **callers-api Lambda + Function URL** — the bonus feature. Kept intentionally simple (no API Gateway, no S3/CloudFront) since the brief asked for "small scale."

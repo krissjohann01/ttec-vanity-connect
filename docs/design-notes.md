@@ -1,72 +1,72 @@
 # Design Notes
 
-This answers the "Writing and Documentation" section of the brief directly. See also [architecture.md](architecture.md) for the diagrams.
+This covers the "Writing and Documentation" part of the brief. For diagrams, see [architecture.md](architecture.md).
 
-## What "best" means for vanity numbers (Exercise §1)
+## How I decided what "best" means for a vanity number
 
-Full implementation: [`lambda/vanity-lookup/vanity.ts`](../lambda/vanity-lookup/vanity.ts).
+Code: [`lambda/vanity-lookup/vanity.ts`](../lambda/vanity-lookup/vanity.ts).
 
-A vanity number is only useful if a human would actually recognize and remember it, so "best" is defined, in priority order, as:
+A vanity number is only good if a person would actually recognize it as a word and remember it. So I rank candidates in this order:
 
-1. **More of the number's 7 local digits converted to letters.** A fully-worded number (`SHOEBOX`) is more memorable than a partially-worded one (`CAB-9999`), so full segmentations always outrank partial matches.
-2. **Fewer words used to cover that many digits.** `SHOEBOX` (one word) outranks `SHOE-BOX` (two words) even though both convert every digit — one memorable word beats a run-on phrase.
-3. **More common words**, using average rank in a frequency-ordered dictionary (see below). This avoids surfacing an obscure word a caller wouldn't recognize when it's read aloud over the phone — a vanity number nobody recognizes as a word isn't actually vanity.
-4. **Starting earlier in the local number.** The part a caller hears/reads first is the part that sticks, so an earlier match is weighted slightly higher as a tiebreaker.
+1. **How many digits turned into letters.** A number that's a full word (like `SHOEBOX`) is more memorable than one that's only partly a word (like `CAB-9999`). Full words always beat partial matches.
+2. **Fewer words used.** `SHOEBOX` (one word) beats `SHOE-BOX` (two words), even though both use all the same digits. One clean word is easier to remember than two words stuck together.
+3. **How common the word is.** I use a word-frequency list, so more common words rank higher. This matters because an obscure word doesn't feel "vanity" if nobody recognizes it when it's read out loud.
+4. **How early the word starts.** The part of the number you hear first is the part that sticks, so an earlier match gets a small bonus.
 
-Two other decisions worth calling out:
+Two other choices worth explaining:
 
-- Only the **7-digit local number** is ever converted, never the area code — this mirrors how real vanity numbers work (1-800-**FLOWERS** keeps the toll-free prefix numeric).
-- The dictionary is a frequency-ranked ~6,000-word list (Google's 10k-most-common-English-words corpus, filtered to 3-7 letter alphabetic words, profanity-filtered), not a full dictionary. A full dictionary would surface technically-valid but obscure or confusing words; frequency ranking directly powers criterion 3 above.
+- I only ever convert the **7-digit local number**, never the area code. This is how real vanity numbers work too — 1-800-**FLOWERS** keeps the toll-free part as numbers and only turns part of it into a word.
+- The dictionary is a list of about 6,000 common English words (from Google's top-10,000-words list, filtered down to words that are 3-7 letters and only use letters found on a phone keypad, with profanity removed). I didn't use a full dictionary on purpose — a full dictionary would return a lot of weird, obscure words that nobody would recognize as real words.
 
-## 1. Reasons, struggles, and problems overcome
+## 1. Why I built it this way, and what went wrong along the way
 
-- **AWS CDK (TypeScript) as the IaC tool**, over SAM/Terraform/Serverless/raw CloudFormation. It matches the role's TypeScript/Node.js focus, lets the Lambda code and infra share one language and toolchain (one `tsconfig`, one test runner), and `NodejsFunction` bundles the Lambdas with esbuild automatically — no separate build step to keep in sync with the stack.
-- **The vanity-number algorithm is a pure, dependency-free TypeScript module** (`vanity.ts`) with zero AWS imports, so it's fully unit-testable (23 tests) without mocking AWS SDK calls. `index.ts` is a thin adapter that only handles the Connect-specific event shape and DynamoDB write.
-- **The biggest struggle was Amazon Connect's IaC coverage gap**: `AWS::Connect::PhoneNumber` has no CloudFormation property to bind a claimed number to a contact flow — that's only exposed via the `AssociatePhoneNumberContactFlow` SDK API, with no CloudFormation-native resource for it. I confirmed this directly against the AWS API/CloudFormation reference docs rather than assuming, then closed the gap with a small custom resource (`lambda/phone-flow-association/`) behind a CDK `custom_resources.Provider`. This is exactly the kind of "the console can do it but IaC can't (yet)" gap a principal engineer is expected to notice and solve cleanly rather than paper over with a manual step.
-- **Getting the contact-flow "Flow language" JSON right without a designer.** Amazon Connect flows are normally built by dragging blocks in the console; this project hand-authors the JSON instead (`infra/lib/contact-flow-content.ts`) so the flow is versioned like everything else. I verified the exact block schema (`InvokeLambdaFunction` parameters, `MessageParticipant` dynamic-text syntax, error-transition shape) against AWS's own Flow Language reference before writing it, rather than guessing at an undocumented format.
-- **Response shape matters more than it looks.** Connect only auto-promotes a *flat* object of *string* values from a Lambda response into `$.External.*` contact attributes (`ResponseValidation: STRING_MAP`). A nested object or a non-string value (e.g. a real number) would silently fail to show up in the flow with no obvious error — this shaped both the Lambda's return type (`VanityLookupResponse`) and a comment flagging why it's load-bearing.
-- **Caught a real bug via the unit tests, not by inspection.** The first version of the display formatter used a fixed 3-4 digit hyphen split (`XXX-XXXX`), which caused two *different* word segmentations of the same digits (`SHOEBOX` vs. `SHOE`+`BOX`) to render as the identical display string and silently deduplicate one away. A test asserting both should be distinguishable candidates caught it; the fix (format word-boundary-first, e.g. `512-SHOE-BOX` vs. `512-SHOEBOX`) is also just a better vanity-number format.
+- **I used AWS CDK (TypeScript) for infrastructure**, instead of SAM, Terraform, Serverless Framework, or plain CloudFormation. This role is TypeScript/Node.js focused, and CDK lets the Lambda code and the infrastructure code live in the same language and the same test setup. It also bundles the Lambda code automatically, so there's no separate build step to keep in sync.
+- **The vanity-number logic is its own plain TypeScript file** (`vanity.ts`) with no AWS code in it at all. That means I can test it (23 tests) without needing to fake or mock any AWS services. `index.ts` is a small wrapper around it that just handles the Connect event and saves to DynamoDB.
+- **The biggest gap I found: CloudFormation can't fully set up Amazon Connect on its own.** There's a CloudFormation resource for claiming a phone number, and one for creating a contact flow, but nothing to connect the two — linking a phone number to a flow is only possible through a separate API call (`AssociatePhoneNumberContactFlow`). I checked the AWS docs directly to be sure this wasn't just something I missed, then wrote a small extra Lambda (`lambda/phone-flow-association/`) that CloudFormation runs automatically to do that one API call for me. This way the whole thing still deploys with one command, with no manual step left for whoever reviews this.
+- **Writing the contact flow by hand, and a real bug that only showed up on a real deploy.** Amazon Connect flows are normally built by dragging and dropping blocks in a web UI. Instead, I wrote the flow as JSON code (`infra/lib/contact-flow-content.ts`), so it's version-controlled like everything else. While researching the correct format, I picked up a detail from an article that turned out to be wrong — I had added a parameter called `ResponseValidation` to the "call this Lambda" step, which doesn't actually exist. When I ran a real deploy against a real AWS account, it failed. CloudFormation's error message didn't say why, so I called Amazon Connect's API directly (using the AWS CLI, against a throw-away test instance) to see the real error, and compared my flow to a working example flow that AWS generates automatically for new accounts. That's how I found and fixed the bad parameter. Good reminder: reading documentation and actually testing against a real system are two different levels of confidence, and only one of them proves your code works.
+- **New AWS accounts come with limits you don't expect.** When I deployed into a brand-new AWS account, I hit two separate limits that wouldn't show up on an older account: new accounts start with a limit of 0 Amazon Connect instances, and claiming a phone number has its own separate limit that needs AWS's manual approval. The first one I could fix myself right away by requesting a limit increase (approved instantly). The second one opened a support case with AWS and needs a human at AWS to approve it, so it just takes time. Worth knowing: if a deploy fails on a brand-new AWS account, it's not always your code — sometimes it's the account itself.
+- **My tests caught a real bug before I even deployed anything.** My first version of the code that formats a vanity number used a fixed pattern (3 digits, dash, 4 digits) no matter what. That caused a problem: the single word `SHOEBOX` and the two words `SHOE` + `BOX` (using the exact same digits) both ended up formatted as the exact same text, so my own code would treat them as duplicates and silently throw one away. A test that checked "these two should be different" caught it. The fix — showing word breaks clearly, like `512-SHOE-BOX` vs `512-SHOEBOX` — also just looks like a better, more realistic vanity number.
 
-## 2. Shortcuts taken that would be bad practice in production
+## 2. Shortcuts I took that would be bad practice in production
 
-- **`DynamoDB.removalPolicy: DESTROY`** — `cdk destroy` deletes real call history. Production should be `RETAIN` with a real backup/lifecycle policy.
-- **Single DynamoDB partition (`pk = "CALLLOG"`)** for the whole call log. It's cheap and simple at demo scale and needs no GSI, but a single logical partition has a hard write-throughput ceiling — see §4.
-- **`callers-api` Function URL has `AuthType: NONE`** and is world-readable. Fine for a demo, not for anything handling real caller data.
-- **Caller numbers are masked (`(***) ***-1234`) by default in the bonus API**, but the *full* number is still written to DynamoDB and spoken back over the phone unmasked — a real product would need an explicit data-handling policy for what counts as PII/CPNI here, not an ad hoc choice made by one engineer.
-- **NANP-only phone number parsing.** International numbers are rejected outright (`normalizePhoneNumber` returns `null`), which is a real functionality gap, not just a formatting nicety.
-- **No dead-letter queue, no alarms, no dashboard.** Lambda errors and DynamoDB throttles are only visible in CloudWatch Logs if someone goes looking.
-- **The word dictionary is a general frequency list, not a curated/moderated one.** It still contains some proper nouns and web-crawl artifacts (see a few odd results in testing, e.g. `JIM`/`LYNN` turning up from a name-heavy corpus) since it wasn't hand-curated beyond profanity filtering and length/alphabetic filters.
-- **The custom resource's Delete handler is a deliberate no-op** (see `lambda/phone-flow-association/index.ts`) rather than calling `DisassociatePhoneNumberContactFlow` — reasonable here since the number and flow are torn down in the same stack deletion, but worth flagging as a simplification rather than a general pattern.
-- **No CI pipeline.** Tests, lint, and `cdk synth` all run locally/manually; there's no GitHub Actions workflow gating merges.
-- **The local dev harness (`npm run dev`, see README "Run it locally first") uses [dynalite](https://github.com/mhart/dynalite)**, a community-maintained pure-JS reimplementation of the DynamoDB API, not real DynamoDB or AWS's own DynamoDB Local (which requires a JVM that isn't part of this project's toolchain). It's accurate enough to exercise the actual handler code end-to-end (verified: writes, queries, ordering, and the bonus web app all work against it, and `npm run db:admin` — [dynamodb-admin](https://github.com/aaronshaf/dynamodb-admin) pointed at the local dynalite endpoint — gives a real item-level table browser for it), but it's not guaranteed to match every DynamoDB behavior exactly (e.g. certain error codes, capacity-related throttling). A more production-grade local setup would use LocalStack or AWS's own DynamoDB Local instead — noted here rather than silently trusting a third-party emulator's fidelity. (One small wrinkle found while wiring this up: `dynamodb-admin`'s current release declares a Node >=22 engine requirement; it still runs fine on Node 20 in practice, but a reviewer on an older Node may see an engine warning that's safe to ignore.)
+- **The DynamoDB table is set to fully delete when the stack is deleted** (`removalPolicy: DESTROY`). That means tearing down this project also deletes all call history. A production version should keep the data around and only delete it on purpose.
+- **One DynamoDB partition holds all the call history.** This keeps things simple for a demo and needs no extra index, but one partition can only handle so many writes per second — see section 4 below.
+- **The bonus API has no login/authentication at all.** Anyone with the URL can read it. Fine for a demo, not okay for real caller data.
+- **Caller numbers are partly hidden in the bonus web app** (shown as `(***) ***-1234`), but the full number is still stored in the database and read out loud on the phone call. A real product would need an actual policy about how phone numbers (which count as personal/private data) are handled — not just one developer's personal judgment call.
+- **Only US/Canada phone numbers are supported.** Any other country's number is simply rejected. This is a real limitation, not just a minor detail.
+- **No alerts, no error dashboard.** If something breaks, the only way to notice is to go looking in the logs yourself.
+- **The word list isn't hand-checked.** It's a general list of common English words, so it still has a few names and odd entries in it (I saw `JIM` and `LYNN` show up during testing) since I only filtered by word length, letters, and profanity — not by "is this actually a normal word."
+- **The cleanup code for the phone-number/flow link doesn't undo itself.** When the whole project is deleted, the extra Lambda that links the phone number to the flow doesn't bother disconnecting them first, since everything's being deleted together anyway. Reasonable here, but I wouldn't reuse this shortcut in a bigger project.
+- **No automated pipeline.** I run tests, linting, and `cdk synth` by hand — there's no GitHub Actions workflow checking every change automatically.
+- **The local testing setup uses a stand-in database, not real DynamoDB.** Running `npm run dev` uses a small tool called [dynalite](https://github.com/mhart/dynalite) that copies DynamoDB's behavior in plain JavaScript, so testing locally doesn't need Docker, Java, or an AWS account. I checked that writing, reading, sorting, and the bonus web app all work correctly against it, and added `npm run db:admin` so you can actually browse the local table contents in a browser. It's close enough to be useful, but it's not guaranteed to behave exactly like real DynamoDB in every edge case. A more serious setup would use AWS's own local DynamoDB tool instead — I'm noting this instead of just assuming the stand-in is perfect.
 
-## 3. What I'd do with more time (wishlist)
+## 3. What I'd do with more time
 
-- **A curated, moderated dictionary** instead of a general frequency list — filter out proper nouns/brand names, and possibly weight by *spoken* memorability, not just written frequency (some common written words are awkward to say aloud).
-- **International number support** — at minimum E.164-aware parsing with per-country-code local-number-length rules, since the current implementation is NANP-only.
-- **A GSI/sharded write path for the call log** so the bonus feature and any future analytics don't share a hot partition with call-time writes (see §4).
-- **CI**: GitHub Actions running `npm test`, `npm run lint`, and `cdk synth` (plus `cdk diff` against a persistent dev stack) on every PR.
-- **Real observability**: structured logs, a CloudWatch dashboard (Lambda errors/duration, DynamoDB throttles, Connect contact volume), and at least one alarm (Lambda error rate) wired to a notification target.
-- **A second, richer scoring signal**: actual word-frequency corpora (e.g. COCA) instead of a generic top-10k list, and maybe a syllable/pronounceability heuristic for how naturally a word reads aloud via Polly.
-- **Turn the bonus web app into something worth the name**: S3 + CloudFront + a real deploy pipeline, and probably a live-update (WebSocket or polling-with-etag) instead of load-once.
-- **Load/soak testing the contact flow** against Connect's actual concurrency limits before calling any of this "production-ready."
+- **Use a better, hand-checked word list** instead of a general common-words list — remove names and brand words, and maybe favor words that sound natural out loud, not just words that are common in writing.
+- **Support phone numbers from other countries**, not just US/Canada.
+- **Split the call-history table into multiple partitions** so heavy call traffic and the bonus feature don't compete for the same write capacity (see section 4).
+- **Add a CI pipeline** — run tests, linting, and `cdk synth` automatically on every change.
+- **Add real monitoring** — logs that are easy to search, a dashboard showing errors and traffic, and at least one alert if something breaks.
+- **Improve the word-scoring** using a better source of "how common is this word," and maybe factor in how natural a word sounds when spoken out loud by the text-to-speech voice.
+- **Make the bonus web app more real** — host it properly (S3 + CloudFront) with an actual deploy process, and have it update live instead of only on page load.
+- **Actually load-test the phone system** against Amazon Connect's real limits before calling any of this "ready for production."
 
-## 4. Considerations before this is ready for real traffic and real attackers
+## 4. What I'd need to think about before this could handle real traffic or real attackers
 
-**Scale**
+**Handling more traffic**
 
-- The call log's single DynamoDB partition is the first thing to break under real volume — DynamoDB partitions have a per-partition throughput ceiling regardless of the table's overall provisioned/on-demand capacity. Production would shard the partition key (e.g. `CALLLOG#<hour>` or a hashed shard suffix) and use a GSI for "recent N" queries instead of relying on partition-key locality.
-- Lambda cold starts matter here specifically because Connect's `InvokeLambdaFunction` block has an 8-second hard ceiling — a cold start plus a slow dictionary load could blow that budget under bursty call volume. Provisioned concurrency (or at least keeping the bundle/dictionary small, which this implementation already does by loading the dictionary once at module scope) would be a first mitigation to measure.
-- Amazon Connect itself has account-level concurrent-call and API rate limits that would need to be checked against expected call volume and raised via AWS Support ahead of any real launch.
+- The single database partition is the first thing that would break under real load — one partition can only handle so many writes per second, no matter how the table is otherwise configured. A production version would split the writes across multiple partitions and use a separate index for "give me the most recent calls."
+- Amazon Connect only waits 8 seconds for the Lambda to respond before giving up. If the Lambda is slow to start up (common right after it's been idle), that's a real risk under heavy call volume. Keeping the code and word list small (which it already is) helps, and AWS has a feature to keep the Lambda "warm" that could help further.
+- Amazon Connect itself has limits on how many calls it can handle at once per account — these would need to be checked and possibly raised with AWS before any real launch.
 
-**Security / attack surface**
+**Security**
 
-- The `callers-api` Function URL is currently unauthenticated and world-readable — real production traffic would need auth (Cognito or IAM SigV4) plus a WAF web ACL for rate limiting/bot protection in front of it.
-- Caller phone numbers are PII (and CPNI-adjacent, given the telephony context) — production needs an explicit data classification and retention policy, not the demo's ad hoc masking-in-the-API-only approach, and likely encryption-at-rest key management beyond DynamoDB's default.
-- The vanity-lookup Lambda's IAM role should be reviewed for drift over time (it's scoped to `PutItem` on one table today, which is correct, but least-privilege needs to be actively maintained, not just true at launch).
-- No abuse/rate-limiting exists on the phone line itself — a bad actor auto-dialing the number repeatedly would generate real DynamoDB writes and Lambda invocations with no backpressure; production would want per-caller-ID throttling in the contact flow or WAF-equivalent protection at the telephony layer.
-- The `phone-flow-association` custom resource's IAM policy is scoped to `resources: ['*']` because Connect doesn't support resource-level permissions for `AssociatePhoneNumberContactFlow` as of this writing — worth re-checking if AWS adds resource-level support later.
+- The bonus web app's API has no login and is open to anyone with the URL — real usage would need proper authentication and some protection against abuse (like a firewall with rate limiting).
+- Phone numbers are personal, private information. A real product needs an actual policy on how that data is stored and protected — not just partially hiding it in one place, like this demo does.
+- The permissions on the Lambda functions should be checked regularly over time, not just set correctly once and forgotten.
+- There's nothing stopping someone from repeatedly calling the number to spam the system — a real version would need some kind of rate limiting on the phone line itself.
+- The extra Lambda that links the phone number to the flow has broader permissions than I'd like, because Amazon Connect doesn't currently offer a way to narrow them further for that specific action. Worth checking again later in case AWS adds that option.
 
-**Operational readiness**
+**Day-to-day operations**
 
-- No alerting, no runbook, no on-call story. At minimum: Lambda error-rate alarms, DynamoDB throttle alarms, and a documented rollback procedure (`cdk deploy` of the previous template) before this could be called production-ready.
+- There's no alerting and no plan for what to do if something breaks at 2am. At minimum, a real version needs alerts for errors and a documented way to roll back a bad deploy.

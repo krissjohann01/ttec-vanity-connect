@@ -47,9 +47,9 @@ describe('plainFormat', () => {
   });
 });
 
-// A tiny, hand-picked dictionary keeps these tests deterministic and
-// independent of the bundled word list -- production behavior against the
-// real ~6k-word list is exercised separately below.
+// Using a small, hand-picked word list here keeps these tests predictable
+// and separate from the real ~6,000-word list. The real list gets its own
+// tests further down.
 const TEST_DICTIONARY = buildDictionaryIndex(['CAB', 'SHOE', 'BOX', 'SHOEBOX', 'CALL', 'ACE']);
 const TEST_RANKS = new Map(['CAB', 'SHOE', 'BOX', 'SHOEBOX', 'CALL', 'ACE'].map((w, i) => [w, i]));
 
@@ -126,10 +126,8 @@ describe('generateVanityCandidates', () => {
 });
 
 describe('generateVanityCandidates against the real bundled dictionary', () => {
-  it('finds at least one candidate for a well-known vanity-friendly number (1-800-FLOWERS style digits)', () => {
-    // 356 9377 -> F=3? letters vary; use a number chosen to spell a common word: 225-3663 -> "CALL" range check instead:
-    // 2255 (CALL) then anything -- pick a full local number that spells CALLNOW: 225-5669 -> C-A-L-L-N-O-W
-    const candidates = generateVanityCandidates('+1-512-225-5669');
+  it('finds at least one candidate for a number chosen to spell a real word ("CALLNOW")', () => {
+    const candidates = generateVanityCandidates('+1-512-225-5669'); // 225-5669 spells CALLNOW
     expect(candidates.length).toBeGreaterThan(0);
   });
 

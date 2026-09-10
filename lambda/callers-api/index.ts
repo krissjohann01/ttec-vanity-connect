@@ -1,8 +1,8 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
 
-// DYNAMODB_ENDPOINT is a local-dev-only hook (see scripts/local-server.ts) --
-// it's never set in the deployed Lambda, which always talks to real DynamoDB.
+// DYNAMODB_ENDPOINT is only used for local testing (see scripts/local-server.ts)
+// -- the real, deployed Lambda never sets it, so it always talks to real DynamoDB.
 const ddbClient = DynamoDBDocumentClient.from(
   new DynamoDBClient(process.env.DYNAMODB_ENDPOINT ? { endpoint: process.env.DYNAMODB_ENDPOINT } : {}),
 );
@@ -11,8 +11,9 @@ const PARTITION_KEY_VALUE = 'CALLLOG';
 const RESULT_LIMIT = 5;
 
 /**
- * Minimal shape of a Lambda Function URL request/response -- avoids pulling
- * in @types/aws-lambda for one handler. See
+ * The basic shape of a request/response for a Lambda that's called directly
+ * over HTTP (a "Function URL"). Written by hand instead of pulling in a
+ * whole extra package just for this one small handler. See
  * https://docs.aws.amazon.com/lambda/latest/dg/urls-invocation.html
  */
 export interface FunctionUrlEvent {
@@ -25,12 +26,13 @@ interface FunctionUrlResult {
 }
 
 /**
- * Masks all but the last 4 digits of a caller number before it leaves the
- * Lambda. Raw caller ID is PII/CPNI (Customer Proprietary Network
- * Information under FCC rules) -- a real product would need an explicit,
- * audited reason to expose full numbers to a public-facing page. This is a
- * deliberate default, not an oversight; see docs/design-notes.md.
- * Set MASK_CALLER_NUMBERS=false to disable for local demoing.
+ * Hides everything but the last 4 digits of a caller's number before
+ * sending it out. A phone number is personal information -- a real product
+ * would need a real, considered reason before showing full numbers on a
+ * public web page, not just have it happen by default. This is a
+ * deliberate choice, not something I forgot to lock down -- see
+ * docs/design-notes.md. Set MASK_CALLER_NUMBERS=false to turn it off for
+ * local demos.
  */
 function maskCallerNumber(callerNumber: string): string {
   if (process.env.MASK_CALLER_NUMBERS === 'false') return callerNumber;
@@ -60,7 +62,7 @@ export async function handler(event: FunctionUrlEvent): Promise<FunctionUrlResul
         TableName: tableName,
         KeyConditionExpression: 'pk = :pk',
         ExpressionAttributeValues: { ':pk': PARTITION_KEY_VALUE },
-        ScanIndexForward: false, // newest first (sk is an ISO timestamp)
+        ScanIndexForward: false, // show the newest calls first
         Limit: RESULT_LIMIT,
       }),
     );

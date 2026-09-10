@@ -1,5 +1,5 @@
 {
-  "name": "ttec-vanity-connect",
+  "name": "vanity-aws-connect",
   "version": "1.0.0",
   "private": true,
   "description": "Amazon Connect vanity-number lookup: caller number -> vanity numbers via Lambda, spoken back in a contact flow, logged to DynamoDB.",

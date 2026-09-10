@@ -15,30 +15,32 @@ export class VanityConnectStack extends cdk.Stack {
     super(scope, id, props);
 
     // ---------------------------------------------------------------------
-    // DynamoDB: single-table call log. See lambda/vanity-lookup/dynamo.ts
-    // for the access-pattern rationale (one partition, sorted by time).
+    // DynamoDB: one table holding all call history. See
+    // lambda/vanity-lookup/dynamo.ts for why it's set up this way.
     // ---------------------------------------------------------------------
     const callLogTable = new dynamodb.Table(this, 'CallLogTable', {
       partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      // Demo-scale shortcut: deleting the stack deletes real call history.
-      // Production should use RETAIN (+ a backup plan) -- see design-notes.md.
+      // Shortcut for a demo project: deleting the stack deletes real call
+      // history along with it. A production setup should keep the data
+      // around on purpose -- see design-notes.md.
       removalPolicy: RemovalPolicy.DESTROY,
     });
 
     // ---------------------------------------------------------------------
-    // Lambda: vanity number lookup, invoked directly by the contact flow.
+    // Lambda: the vanity-number lookup, called directly by the call flow.
     // ---------------------------------------------------------------------
     const vanityLookupFn = new NodejsFunction(this, 'VanityLookupFunction', {
       entry: path.join(__dirname, '../../lambda/vanity-lookup/index.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
       memorySize: 256,
-      // Must stay comfortably under Connect's 8s hard ceiling on the Invoke
-      // Lambda block (see InvocationTimeLimitSeconds in contact-flow-content.ts)
-      // so a slow Lambda always resolves -- success or caught error -- before
-      // Connect gives up and takes the flow's own error branch.
+      // Amazon Connect only waits 8 seconds for this Lambda to respond
+      // (see InvocationTimeLimitSeconds in contact-flow-content.ts), so
+      // this timeout needs to stay well under that -- that way, whether
+      // the Lambda succeeds or fails, Connect always hears back from it
+      // before giving up and showing its own generic error instead.
       timeout: Duration.seconds(5),
       environment: { TABLE_NAME: callLogTable.tableName },
       bundling: { minify: true, sourceMap: false },
@@ -46,7 +48,7 @@ export class VanityConnectStack extends cdk.Stack {
     callLogTable.grantWriteData(vanityLookupFn);
 
     // ---------------------------------------------------------------------
-    // Lambda: bonus "last 5 callers" read API, exposed via a Function URL.
+    // Lambda: the bonus "last 5 callers" API, reachable over plain HTTP.
     // ---------------------------------------------------------------------
     const callersApiFn = new NodejsFunction(this, 'CallersApiFunction', {
       entry: path.join(__dirname, '../../lambda/callers-api/index.ts'),
@@ -59,10 +61,10 @@ export class VanityConnectStack extends cdk.Stack {
     });
     callLogTable.grantReadData(callersApiFn);
 
-    // AuthType.NONE is a deliberate, documented shortcut for this "minimal"
-    // bonus feature -- see docs/design-notes.md "shortcuts" for the
-    // production alternative (Cognito/IAM auth in front of the URL, plus a
-    // WAF web ACL for rate limiting).
+    // No login required to call this URL -- a deliberate shortcut for this
+    // small bonus feature. See the "shortcuts" section of design-notes.md
+    // for what a production version would need instead (real login, plus a
+    // firewall to limit abuse).
     const callersApiUrl = callersApiFn.addFunctionUrl({
       authType: lambda.FunctionUrlAuthType.NONE,
       cors: {
@@ -72,13 +74,14 @@ export class VanityConnectStack extends cdk.Stack {
     });
 
     // ---------------------------------------------------------------------
-    // Amazon Connect: a fresh instance + a claimed DID, since the reviewer
-    // doesn't already have a Connect instance to deploy into.
+    // Amazon Connect: creates a brand-new instance and claims a phone
+    // number, since whoever deploys this likely doesn't have one already.
     // ---------------------------------------------------------------------
     const instance = new connect.CfnInstance(this, 'ConnectInstance', {
       identityManagementType: 'CONNECT_MANAGED',
-      // Instance aliases are globally unique across all of Amazon Connect,
-      // so this is derived from account+region rather than hardcoded.
+      // This name has to be unique across all of Amazon Connect (not just
+      // this AWS account), so it's built from the account ID and region
+      // instead of being a fixed name.
       instanceAlias: `vanity-connect-${this.account}-${this.region}`.slice(0, 45),
       attributes: {
         inboundCalls: true,
@@ -90,18 +93,18 @@ export class VanityConnectStack extends cdk.Stack {
       targetArn: instance.attrArn,
       countryCode: 'US',
       type: 'DID',
-      description: 'TTEC Digital take-home: vanity number lookup line',
+      description: 'Vanity number lookup line',
     });
 
-    // Let Connect invoke the vanity Lambda, scoped to this specific instance.
+    // Give this specific Connect instance permission to call the Lambda.
     vanityLookupFn.addPermission('AllowConnectInvoke', {
       principal: new iam.ServicePrincipal('connect.amazonaws.com'),
       sourceArn: instance.attrArn,
     });
 
-    // Required before a contact flow can reference the Lambda: this is what
-    // makes the function selectable inside an "Invoke AWS Lambda function"
-    // block (the console equivalent is Flows > AWS Lambda > Add Lambda function).
+    // Needed before a call flow can use this Lambda -- this is what makes
+    // it show up as an option in an "Invoke AWS Lambda function" step (the
+    // same thing you'd do by hand under Flows > AWS Lambda in the console).
     const lambdaIntegration = new connect.CfnIntegrationAssociation(this, 'LambdaIntegration', {
       instanceId: instance.attrArn,
       integrationType: 'LAMBDA_FUNCTION',
@@ -109,7 +112,7 @@ export class VanityConnectStack extends cdk.Stack {
     });
 
     // ---------------------------------------------------------------------
-    // Contact flow: invoke the Lambda, speak back the vanity numbers.
+    // Contact flow: calls the Lambda, then reads the vanity numbers back.
     // ---------------------------------------------------------------------
     const contactFlow = new connect.CfnContactFlow(this, 'VanityContactFlow', {
       instanceArn: instance.attrArn,
@@ -117,16 +120,16 @@ export class VanityConnectStack extends cdk.Stack {
       type: 'CONTACT_FLOW',
       content: buildContactFlowContent(vanityLookupFn.functionArn),
     });
-    // Explicit, on top of whatever CDK infers from the ARN token embedded in
-    // `content`: the flow can't be usable until Connect is actually allowed
-    // to invoke the function it references.
+    // Spelled out explicitly, on top of whatever CDK already figures out on
+    // its own: the flow isn't actually usable until Connect is allowed to
+    // call the Lambda function it references.
     contactFlow.addResourceDependency(lambdaIntegration);
 
     // ---------------------------------------------------------------------
-    // Bind the claimed number to the flow. There is no CloudFormation-native
-    // resource for this association (verified against the CFN Connect
-    // resource docs while building this) -- only the AssociatePhoneNumberContactFlow
-    // API. A small custom resource fills the gap; see
+    // Connect the claimed number to the call flow. There's no built-in
+    // CloudFormation way to do this (checked the AWS docs directly to make
+    // sure) -- it's only possible through a separate API call. A small
+    // extra Lambda fills that gap; see
     // lambda/phone-flow-association/index.ts and docs/design-notes.md.
     // ---------------------------------------------------------------------
     const associationHandler = new NodejsFunction(this, 'PhoneFlowAssociationHandler', {
@@ -139,8 +142,8 @@ export class VanityConnectStack extends cdk.Stack {
     associationHandler.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['connect:AssociatePhoneNumberContactFlow'],
-        // Connect does not support resource-level permissions for this
-        // action as of this writing, so it can't be scoped further than '*'.
+        // Amazon Connect doesn't currently let you limit this specific
+        // permission to just one instance, so it can't be narrowed further.
         resources: ['*'],
       }),
     );

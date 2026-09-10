@@ -6,26 +6,25 @@ import { handler as vanityLookupHandler, ConnectLambdaEvent } from '../lambda/va
 import { handler as callersApiHandler, FunctionUrlEvent } from '../lambda/callers-api/index';
 
 /**
- * Local dev harness -- NOT part of the deployed system. Runs the actual
- * Lambda handler code (unchanged) against dynalite, a pure-JS
- * DynamoDB-API-compatible server, so you can exercise the full
- * call -> Lambda -> DynamoDB -> bonus API path without AWS credentials,
- * Docker, or Java. See README.md "Run it locally first".
+ * A local testing tool -- this is NOT part of what actually gets deployed.
+ * It runs the real Lambda code, unchanged, against dynalite (a small tool
+ * that copies DynamoDB's behavior in plain JavaScript), so you can test the
+ * whole call -> Lambda -> database -> bonus API path with no AWS account,
+ * Docker, or Java needed. See README.md, "Try it locally first".
  *
- * What this deliberately does NOT emulate: Amazon Connect itself (the
- * telephony instance, phone number, and contact flow). There is no local
- * emulator for Connect -- that part can only be verified after a real
- * `cdk deploy`. This harness simulates the same event shape Connect would
- * send the Lambda, so the algorithm/handler/DB logic is fully exercised;
- * only the "does a real phone call reach it" question is left for the deploy.
+ * What this can't test: Amazon Connect itself (the actual phone number and
+ * call flow). There's no local version of Connect to test against -- that
+ * part only gets checked once you actually deploy. This tool sends the
+ * Lambda the same kind of data Connect would send it, so everything except
+ * "does a real phone call actually reach it" gets tested here.
  */
 const DYNALITE_PORT = 8000;
 const SERVER_PORT = 4000;
 
-// Tiny, dependency-free debug UI served at GET / -- this is NOT the bonus
-// web app (that's web/index.html, which talks to whatever API_URL is
-// configured, real or local). This page exists purely so you can poke at
-// the local dev server from a browser instead of curl.
+// A small, no-frills test page, served at GET / -- this is NOT the bonus
+// web app (that's web/index.html, which can point at either the real
+// deployed API or this local one). This page just exists so you can try
+// the local server out in a browser instead of using curl.
 const DEBUG_PAGE_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -41,8 +40,8 @@ const DEBUG_PAGE_HTML = `<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>Vanity Connect -- local dev server</h1>
-<p>This page is dev tooling only (served by <code>scripts/local-server.ts</code>), not the actual bonus web app -- that's <code>web/index.html</code>. Use this to poke at the real Lambda handler code without curl.</p>
+<h1>Vanity Connect -- local test server</h1>
+<p>This page is just for local testing (served by <code>scripts/local-server.ts</code>) -- it's not the actual bonus web app, that's <code>web/index.html</code>. Use this page to try out the real Lambda code without needing curl.</p>
 
 <section>
   <h2>Simulate an inbound call</h2>
@@ -155,8 +154,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         res.end(JSON.stringify({ error: 'phoneNumber is required, e.g. {"phoneNumber":"+15122255669"}' }));
         return;
       }
-      // Mirrors the real event shape Connect sends the "Invoke AWS Lambda
-      // function" block -- see lambda/vanity-lookup/index.ts ConnectLambdaEvent.
+      // Copies the same data shape Connect would send from its "Invoke AWS
+      // Lambda function" step -- see ConnectLambdaEvent in lambda/vanity-lookup/index.ts.
       const event: ConnectLambdaEvent = {
         Details: {
           ContactData: {
