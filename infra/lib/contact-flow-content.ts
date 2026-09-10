@@ -9,11 +9,23 @@
  *
  * Flow: Invoke Lambda (caller's number in) -> on success, speak the 3
  * vanity numbers it returned (via $.External.vanity1/2/3, which Connect
- * auto-populates from the Lambda's flat STRING_MAP response) -> disconnect.
- * On any Lambda error (throttle, timeout, bad response, etc.) the flow takes
- * a separate apology-and-disconnect branch instead of failing the call --
- * see docs/design-notes.md "error handling" for why this is layered on top
- * of the Lambda's own internal fallback rather than replacing it.
+ * auto-populates from the Lambda's flat STRING_MAP response -- this is
+ * default InvokeLambdaFunction behavior, not something opted into via a
+ * parameter) -> disconnect. On any Lambda error (throttle, timeout, bad
+ * response, etc.) the flow takes a separate apology-and-disconnect branch
+ * instead of failing the call -- see docs/design-notes.md "error handling"
+ * for why this is layered on top of the Lambda's own internal fallback
+ * rather than replacing it.
+ *
+ * NOTE: an earlier version of this also set a `ResponseValidation:
+ * "STRING_MAP"` parameter, following what several secondary sources
+ * described as a real InvokeLambdaFunction parameter. It isn't -- Connect's
+ * CreateContactFlow API rejects it outright (`InvalidContactFlowException`).
+ * Confirmed by diffing against a live account's auto-generated "Sample
+ * Lambda integration" flow, which has no such parameter and still resolves
+ * $.External.* from the Lambda's response. Root-caused via the AWS CLI
+ * directly against a throwaway Connect instance after this exact bug caused
+ * a real `cdk deploy` to fail -- see docs/design-notes.md "struggles".
  */
 export function buildContactFlowContent(vanityLookupLambdaArn: string): string {
   const content = {
@@ -41,9 +53,6 @@ export function buildContactFlowContent(vanityLookupLambdaArn: string): string {
           // timeout is set below this (see vanity-connect-stack.ts) so it
           // always resolves (success or caught error) before Connect gives up.
           InvocationTimeLimitSeconds: '8',
-          // Requires the Lambda to return a flat object of string values --
-          // see lambda/vanity-lookup/index.ts VanityLookupResponse.
-          ResponseValidation: 'STRING_MAP',
         },
         Transitions: {
           NextAction: 'SpeakVanityNumbers',
