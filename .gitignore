@@ -1,0 +1,12 @@
+node_modules/
+dist/
+cdk.out/
+.DS_Store
+.env
+*.log
+
+# Personal panel-prep notes are not part of the exam deliverable.
+panel-prep.md
+
+# Local web config generated after deploy (contains a real Function URL).
+web/config.js
